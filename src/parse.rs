@@ -254,7 +254,11 @@ impl Tail {
             }
             "function_call_output" | "custom_tool_call_output" => {
                 let out = match &p["output"] {
-                    Value::String(s) => s.clone(),
+                    // Older rollouts store {"output": ..., "metadata": ...} as a JSON string.
+                    Value::String(s) => match serde_json::from_str::<Value>(s) {
+                        Ok(Value::Object(o)) if o.contains_key("output") => flatten(&o["output"]),
+                        _ => s.clone(),
+                    },
                     o => flatten(&o["output"]).to_string() + &flatten(&o["content"]),
                 };
                 // Codex prefixes shell output with a small header; keep the output part.
@@ -391,4 +395,127 @@ fn custom_call(name: String, input: &str) -> (String, String) {
         }
     }
     (name, input.lines().next().unwrap_or("").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+    }
+
+    fn read(name: &str, agent: Agent) -> Tail {
+        let mut t = Tail::new(fixture(name), agent);
+        assert!(t.poll());
+        t
+    }
+
+    fn show(t: &Tail) -> Vec<(Role, String)> {
+        t.msgs
+            .iter()
+            .map(|m| (m.role, match &m.name {
+                Some(n) => format!("{n}: {}", m.text),
+                None => m.text.clone(),
+            }))
+            .collect()
+    }
+
+    #[test]
+    fn claude_transcript() {
+        let t = read("claude.jsonl", Agent::Claude);
+        assert_eq!(
+            show(&t),
+            vec![
+                (Role::User, "Fix the broken link in README.md.".into()),
+                (Role::Assistant, "I'll look at README.md first.".into()),
+                (Role::Tool, "Bash: cat -n README.md …".into()),
+                (Role::Output, "6  [Configuration](docs/configuraton.md)".into()),
+                (Role::User, "/model opus".into()),
+                (Role::Assistant, "Fixed the link on line 6.".into()),
+                (Role::Info, "context compacted".into()),
+            ]
+        );
+        assert_eq!(t.title.as_deref(), Some("README.md broken link"));
+        assert_eq!(t.busy, None);
+    }
+
+    #[test]
+    fn codex_wrapped_tool_calls() {
+        let t = read("codex.jsonl", Agent::Codex);
+        assert_eq!(
+            show(&t),
+            vec![
+                (Role::User, "Add a docstring to clean_rows().".into()),
+                (Role::Assistant, "I'll add a short docstring.".into()),
+                (Role::Tool, "shell: sed -n '1,40p' clean.py".into()),
+                (Role::Output, "def clean_rows(rows):".into()),
+                (Role::Tool, "patch: Update File: clean.py".into()),
+                (Role::Tool, "patch: Add File: new.md".into()),
+                (Role::Assistant, "Added a docstring to clean_rows().".into()),
+            ]
+        );
+        assert_eq!(t.busy, Some(false));
+    }
+
+    #[test]
+    fn codex_legacy_rollout() {
+        let t = read("codex-legacy.jsonl", Agent::Codex);
+        assert_eq!(
+            show(&t),
+            vec![
+                (Role::User, "List the files.".into()),
+                (Role::Tool, "shell: ls -la".into()),
+                (Role::Output, "a.py\nb.py".into()),
+                (Role::Assistant, "Two files: a.py and b.py.".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn reads_appended_lines_and_waits_for_partial_ones() {
+        let dir = std::env::temp_dir().join(format!("trax-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let line = |text: &str| {
+            format!(r#"{{"type":"user","message":{{"role":"user","content":"{text}"}}}}"#)
+        };
+        std::fs::write(&path, line("one") + "\n").unwrap();
+        let mut t = Tail::new(path.clone(), Agent::Claude);
+        assert!(t.poll());
+        assert_eq!(t.msgs.len(), 1);
+        assert!(!t.poll());
+
+        // Half a line is kept until the rest arrives.
+        let two = line("two");
+        let (a, b) = two.split_at(10);
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(a.as_bytes()).unwrap();
+        t.poll();
+        assert_eq!(t.msgs.len(), 1);
+        f.write_all(format!("{b}\n").as_bytes()).unwrap();
+        assert!(t.poll());
+        assert_eq!(t.msgs[1].text, "two");
+
+        // A truncated file is read again from the start.
+        std::fs::write(&path, line("fresh") + "\n").unwrap();
+        assert!(t.poll());
+        assert_eq!(show(&t), vec![(Role::User, "fresh".into())]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sanitize_drops_escapes_and_controls() {
+        assert_eq!(sanitize("\x1b[1;31mred\x1b[0m\tx\x07"), "red    x");
+        assert_eq!(sanitize("\x1b]0;title\x07after"), "after");
+    }
+
+    #[test]
+    fn summarize_picks_the_useful_field() {
+        assert_eq!(summarize(&serde_json::json!({"file_path": "src/a.rs", "content": "x"})), "src/a.rs");
+        assert_eq!(summarize(&serde_json::json!({"command": ["bash", "-lc", "make test"]})), "make test");
+        let long = "x".repeat(300);
+        assert!(summarize(&serde_json::json!({ "command": long })).ends_with(" …"));
+    }
 }
