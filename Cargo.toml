@@ -1,12 +1,20 @@
 [package]
-name = "trax"
+name = "trax-cli"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "Watch every Claude Code, Codex and other coding-agent CLI session from one terminal"
 license = "MIT"
+repository = "https://github.com/ielbadisy/trax"
+homepage = "https://github.com/ielbadisy/trax"
 readme = "README.md"
 keywords = ["claude", "codex", "tui", "cli", "agents"]
 categories = ["command-line-utilities"]
+exclude = ["docs/", ".github/"]
+
+[[bin]]
+name = "trax"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
