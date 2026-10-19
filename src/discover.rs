@@ -94,6 +94,10 @@ fn procs() -> Vec<Proc> {
                 }
             }
         };
+        // Newer Codex keeps a background `codex app-server` daemon; it is not a session.
+        if agent == Agent::Codex && fs::read(dir.join("cmdline")).is_ok_and(|c| c.split(|&b| b == 0).any(|a| a == b"app-server")) {
+            continue;
+        }
         let Ok(cwd) = fs::read_link(dir.join("cwd")) else { continue };
         let (ppid, ticks) = stat(pid).unwrap_or((0, 0));
         let start = btime.map(|b| UNIX_EPOCH + Duration::from_secs(b) + Duration::from_millis(ticks * 10));
