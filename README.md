@@ -2,6 +2,10 @@
 
 Watch and drive every coding-agent CLI session (Claude Code, Codex, Gemini, Aider, ...) from one terminal.
 
+![trax: two Claude Code sessions and one Codex session on one wall; Enter opens the Codex session, ctrl-q comes back](docs/demo.gif)
+
+<sub>Real sessions, recorded in a throwaway folder: two Claude Code agents finish their tasks while Codex is taken over and given a new one.</sub>
+
 ```
 trax                  # every session on one wall: select one, press Enter, you're in it
 trax new claude       # start a session hosted by trax (full control)
@@ -90,5 +94,7 @@ name, folder or title.
   `send`, `keys`, `screen`, `resize`.
 - `trax new` / take over run `trax run --headless` in its own process
   session (no terminal), so hosted agents survive the dashboard closing.
+- `TRAX_ROOT=<folder>` limits trax to sessions under that folder (handy for
+  demos and tests).
 
 Linux only for now (uses `/proc`).
