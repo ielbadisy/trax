@@ -94,8 +94,7 @@ fn procs() -> Vec<Proc> {
                 }
             }
         };
-        // Newer Codex keeps a background `codex app-server` daemon; it is not a session.
-        if agent == Agent::Codex && fs::read(dir.join("cmdline")).is_ok_and(|c| c.split(|&b| b == 0).any(|a| a == b"app-server")) {
+        if agent == Agent::Codex && fs::read(dir.join("cmdline")).is_ok_and(|c| is_codex_daemon(&c)) {
             continue;
         }
         let Ok(cwd) = fs::read_link(dir.join("cwd")) else { continue };
@@ -110,6 +109,11 @@ fn procs() -> Vec<Proc> {
     let ids: HashMap<u32, Agent> = out.iter().map(|p| (p.pid, p.agent)).collect();
     out.retain(|p| ids.get(&p.ppid) != Some(&p.agent));
     out
+}
+
+/// Newer Codex keeps a background `codex app-server` daemon; it is not a session.
+fn is_codex_daemon(cmdline: &[u8]) -> bool {
+    cmdline.split(|&b| b == 0).any(|a| a == b"app-server")
 }
 
 fn ancestors(pid: u32, depth: usize) -> Vec<u32> {
@@ -464,5 +468,17 @@ impl Scanner {
             out.retain(|s| s.cwd.starts_with(&root));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_daemon_is_not_a_session() {
+        assert!(is_codex_daemon(b"/x/bin/codex\0app-server\0--listen\0unix://\0"));
+        assert!(!is_codex_daemon(b"codex\0resume\0abc\0"));
+        assert!(!is_codex_daemon(b"codex\0"));
     }
 }
