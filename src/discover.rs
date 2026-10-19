@@ -458,6 +458,11 @@ impl Scanner {
                 });
             }
         }
+        // TRAX_ROOT limits trax to sessions under one folder (demos, tests).
+        if let Some(root) = std::env::var_os("TRAX_ROOT") {
+            let root = PathBuf::from(root);
+            out.retain(|s| s.cwd.starts_with(&root));
+        }
         out
     }
 }
