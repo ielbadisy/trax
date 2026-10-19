@@ -249,11 +249,8 @@ impl Tail {
             "custom_tool_call" => {
                 let name = p["name"].as_str().unwrap_or("tool").to_string();
                 let input = p["input"].as_str().unwrap_or("");
-                let line = input
-                    .lines()
-                    .find(|l| l.starts_with("*** Add File") || l.starts_with("*** Update File") || l.starts_with("*** Delete File"))
-                    .unwrap_or_else(|| input.lines().next().unwrap_or(""));
-                self.push(Role::Tool, Some(name), line.trim_start_matches("*** ").to_string(), time);
+                let (name, line) = custom_call(name, input);
+                self.push(Role::Tool, Some(name), line, time);
             }
             "function_call_output" | "custom_tool_call_output" => {
                 let out = match &p["output"] {
@@ -373,4 +370,25 @@ pub fn sanitize(s: &str) -> String {
         }
     }
     out
+}
+
+/// One readable line for a Codex custom tool call. Newer Codex wraps tools in
+/// JavaScript (`tools.exec_command({"cmd": ...})`), so dig the command or the
+/// patched file out of it instead of showing the code.
+fn custom_call(name: String, input: &str) -> (String, String) {
+    if let Some(i) = input.find("\"cmd\":") {
+        let rest = input[i + 6..].trim_start();
+        if let Some(Ok(cmd)) = serde_json::Deserializer::from_str(rest).into_iter::<String>().next() {
+            return ("shell".into(), cmd);
+        }
+    }
+    for verb in ["Add File: ", "Update File: ", "Delete File: "] {
+        if let Some(i) = input.find(&format!("*** {verb}")) {
+            let path = &input[i + 4 + verb.len()..];
+            let end = path.find(['\n', '\\', '"']).unwrap_or(path.len());
+            let file = path[..end].rsplit('/').next().unwrap_or("");
+            return ("patch".into(), format!("{verb}{file}"));
+        }
+    }
+    (name, input.lines().next().unwrap_or("").to_string())
 }
