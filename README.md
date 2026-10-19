@@ -12,6 +12,22 @@ trax new claude       # start a session hosted by trax (full control)
 trax take <session>   # move a session from another window into trax
 ```
 
+## Install
+
+Linux, x86_64 or arm64. Download the binary from the
+[latest release](https://github.com/ielbadisy/trax/releases/latest):
+
+```
+curl -L https://github.com/ielbadisy/trax/releases/latest/download/trax-x86_64-unknown-linux-gnu.tar.gz | tar xz
+install trax-x86_64-unknown-linux-gnu/trax ~/.local/bin/
+```
+
+Or build it with Cargo (Rust 1.88 or newer):
+
+```
+cargo install --git https://github.com/ielbadisy/trax
+```
+
 ## What it does
 
 - **Finds sessions by itself.** Any running `claude` or `codex` shows up with
@@ -98,3 +114,10 @@ name, folder or title.
   demos and tests).
 
 Linux only for now (uses `/proc`).
+
+## Roadmap
+
+- macOS support (finding processes without `/proc`).
+- A desktop notification when a session finishes.
+- Read Gemini and Aider conversations. Today they are listed, and shown as a
+  screen copy when hosted by trax.
