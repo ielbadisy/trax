@@ -92,3 +92,43 @@ pub struct Msg {
     pub text: String,
     pub time: Option<String>,
 }
+
+/// Token use read from a transcript.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Usage {
+    /// Tokens processed over the whole session (input incl. cache, plus output).
+    pub tokens: u64,
+    /// Size of the context at the last turn.
+    pub context: Option<u64>,
+    /// Context window of the model, when the transcript says it.
+    pub window: Option<u64>,
+}
+
+impl Usage {
+    /// Share of the context window in use, 0-100. Claude transcripts do not
+    /// record the window: assume 200k, or 1M once the context went past 200k.
+    pub fn context_pct(&self) -> Option<u64> {
+        let c = self.context?;
+        let w = self.window.unwrap_or(if c > 200_000 { 1_000_000 } else { 200_000 });
+        Some((c * 100 / w.max(1)).min(100))
+    }
+}
+
+/// One plan rate-limit window (Codex records these after every turn).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Window {
+    pub used_pct: f64,
+    pub minutes: u64,
+    /// Unix seconds.
+    pub resets_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Limits {
+    /// Short window (5 hours).
+    pub primary: Option<Window>,
+    /// Long window (weekly).
+    pub secondary: Option<Window>,
+    /// Unix seconds of the event that reported them.
+    pub at: i64,
+}
