@@ -45,6 +45,8 @@ struct App {
     all: Vec<Session>,
     sessions: Vec<Session>,
     tails: HashMap<PathBuf, Tail>,
+    /// Codex limits from the newest rollout, so they show with no Codex running.
+    codex_seen: Option<(PathBuf, std::time::SystemTime, Option<crate::model::Limits>)>,
     mirrors: HashMap<PathBuf, (Instant, Mirror)>,
     sel: usize,
     view: View,
@@ -156,6 +158,7 @@ impl App {
             all: vec![],
             sessions: vec![],
             tails: HashMap::new(),
+            codex_seen: None,
             mirrors: HashMap::new(),
             sel: 0,
             view: if o.view == View::Attach { View::Wall } else { o.view },
@@ -213,6 +216,16 @@ impl App {
         self.sessions.get(self.sel)
     }
 
+    fn usage_of(&self, s: &Session) -> Option<&crate::model::Usage> {
+        self.tails.get(s.log.as_ref()?).map(|t| &t.usage)
+    }
+
+    /// Most recent Codex plan limits seen in any transcript.
+    fn codex_limits(&self) -> Option<crate::model::Limits> {
+        let seen = self.codex_seen.as_ref().and_then(|(_, _, l)| *l);
+        self.tails.values().filter_map(|t| t.limits).chain(seen).max_by_key(|l| l.at)
+    }
+
     fn say(&mut self, s: impl Into<String>) {
         self.flash = Some((Instant::now(), s.into()));
     }
@@ -228,6 +241,11 @@ impl App {
         self.sel = self.sel.min(self.sessions.len().saturating_sub(1));
         let keep: HashSet<PathBuf> = self.all.iter().filter_map(|s| s.log.clone()).collect();
         self.tails.retain(|p, _| keep.contains(p));
+        if let Some((p, t)) = crate::discover::newest_codex_rollout()
+            && self.codex_seen.as_ref().is_none_or(|(sp, st, _)| *sp != p || *st != t) {
+                let l = crate::discover::codex_limits_in(&p);
+                self.codex_seen = Some((p, t, l));
+            }
         self.last_scan = Instant::now();
     }
 
@@ -717,8 +735,21 @@ impl App {
             spans.push(Span::styled(format!("filter “{}”   ", self.filter), Style::new().fg(Color::Yellow)));
         }
         f.render_widget(Line::from(spans), area);
-        let clock = chrono::Local::now().format("%H:%M:%S ").to_string();
-        f.render_widget(Line::styled(clock, Style::new().fg(DIM)).right_aligned(), area);
+        let mut right = Vec::new();
+        if let Some(l) = self.codex_limits() {
+            let now = chrono::Utc::now().timestamp();
+            right.push(Span::styled("codex ", Style::new().fg(render::agent_color(Agent::Codex))));
+            for (i, w) in [l.primary, l.secondary].iter().flatten().enumerate() {
+                let (txt, pct) = render::window_text(w, now);
+                if i > 0 {
+                    right.push(Span::styled(" · ", Style::new().fg(FAINT)));
+                }
+                right.push(Span::styled(txt, Style::new().fg(render::pct_color(pct))));
+            }
+            right.push(Span::raw("   "));
+        }
+        right.push(Span::styled(chrono::Local::now().format("%H:%M:%S ").to_string(), Style::new().fg(DIM)));
+        f.render_widget(Line::from(right).right_aligned(), area);
     }
 
     fn draw_empty(&self, f: &mut Frame, area: Rect) {
@@ -756,11 +787,23 @@ impl App {
             badges.push(Span::styled(format!(" {} ago ", render::age(s.modified)), Style::new().fg(DIM)));
         }
         let border = if selected { ac } else { FAINT };
-        Block::bordered()
+        let mut block = Block::bordered()
             .border_type(if selected { BorderType::Thick } else { BorderType::Rounded })
             .border_style(Style::new().fg(border))
             .title(Line::from(title))
-            .title(Line::from(badges).right_aligned())
+            .title(Line::from(badges).right_aligned());
+        if let Some(u) = self.usage_of(s) {
+            let txt = render::usage_text(u);
+            if !txt.is_empty() {
+                let c = match u.context_pct() {
+                    Some(p) if p >= 70 => render::pct_color(p as f64),
+                    _ if selected => DIM,
+                    _ => FAINT,
+                };
+                block = block.title_bottom(Line::styled(format!(" {txt} "), Style::new().fg(c)).right_aligned());
+            }
+        }
+        block
     }
 
     fn body_lines(&mut self, idx: usize, inner: Rect, compact: bool) -> Vec<Line<'static>> {
@@ -835,8 +878,9 @@ impl App {
                     Some(t) => format!(" {} · {} ", render::short_path(&s.cwd, 28), t),
                     None => format!(" {} ", render::short_path(&s.cwd, 40)),
                 };
+                let used = self.usage_of(&s).map(|u| render::usage_text(u).chars().count() + 3).unwrap_or(0);
                 block = block.title_bottom(Line::styled(
-                    render::truncate(&sub, cells[c].width.saturating_sub(4) as usize),
+                    render::truncate(&sub, (cells[c].width as usize).saturating_sub(4 + used)),
                     Style::new().fg(if selected { DIM } else { FAINT }),
                 ));
                 let inner = block.inner(cells[c]);
@@ -928,6 +972,13 @@ impl App {
                     Span::styled(format!(" {} · {} ", s.name, s.label), Style::new().fg(Color::Black).bg(ac).add_modifier(Modifier::BOLD)),
                     Span::styled(format!("  {dot} {}", state_word(s.state)), Style::new().fg(dc).add_modifier(Modifier::BOLD)),
                 ];
+                if let Some(u) = self.usage_of(&s) {
+                    let txt = render::usage_text(u);
+                    if !txt.is_empty() {
+                        let c = u.context_pct().map(|p| render::pct_color(p as f64)).unwrap_or(DIM);
+                        v.push(Span::styled(format!("   {txt}"), Style::new().fg(c)));
+                    }
+                }
                 // Only when another session finished: time to go back.
                 let done = self.all.iter().filter(|o| o.key() != s.key() && self.done.contains(&o.key())).count();
                 if done > 0 {
