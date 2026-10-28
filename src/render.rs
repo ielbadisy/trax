@@ -366,3 +366,58 @@ impl Md {
         out
     }
 }
+
+/// 950, 12.3k, 4.5M
+pub fn count(n: u64) -> String {
+    match n {
+        0..1_000 => n.to_string(),
+        1_000..1_000_000 => format!("{:.1}k", n as f64 / 1e3).replace(".0k", "k"),
+        _ => format!("{:.1}M", n as f64 / 1e6).replace(".0M", "M"),
+    }
+}
+
+/// "ctx 72% · 1.2M tok", empty when nothing is known yet.
+pub fn usage_text(u: &crate::model::Usage) -> String {
+    let mut parts = Vec::new();
+    if let Some(p) = u.context_pct() {
+        parts.push(format!("ctx {p}%"));
+    }
+    if u.tokens > 0 {
+        parts.push(format!("{} tok", count(u.tokens)));
+    }
+    parts.join(" · ")
+}
+
+/// Color for a percentage used: calm, then yellow from 70, red from 90.
+pub fn pct_color(p: f64) -> Color {
+    if p >= 90.0 {
+        Color::Red
+    } else if p >= 70.0 {
+        Color::Yellow
+    } else {
+        Color::Rgb(140, 145, 160)
+    }
+}
+
+/// "5h 9% (18:40)" for one plan window; a window whose reset time passed shows 0%.
+pub fn window_text(w: &crate::model::Window, now: i64) -> (String, f64) {
+    let name = match w.minutes {
+        300 => "5h".to_string(),
+        10080 => "wk".to_string(),
+        m if m % 1440 == 0 => format!("{}d", m / 1440),
+        m if m % 60 == 0 => format!("{}h", m / 60),
+        m => format!("{m}m"),
+    };
+    if w.resets_at > 0 && w.resets_at <= now {
+        return (format!("{name} 0%"), 0.0);
+    }
+    let reset = chrono::DateTime::from_timestamp(w.resets_at, 0)
+        .map(|t| {
+            let t = t.with_timezone(&chrono::Local);
+            if w.resets_at - now < 86_400 { t.format("%H:%M").to_string() } else { t.format("%a %H:%M").to_string() }
+        })
+        .unwrap_or_default();
+    let pct = w.used_pct.round();
+    let txt = if reset.is_empty() { format!("{name} {pct}%") } else { format!("{name} {pct}% ↻{reset}") };
+    (txt, w.used_pct)
+}
