@@ -248,6 +248,24 @@ fn mtime(p: &Path) -> Option<SystemTime> {
     fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
+/// Newest Codex rollout of the last week and its modification time.
+pub fn newest_codex_rollout() -> Option<(PathBuf, SystemTime)> {
+    let p = codex_rollouts(7).into_iter().next()?;
+    let t = mtime(&p)?;
+    Some((p, t))
+}
+
+/// Plan limits from the last `token_count` event near the end of a rollout.
+pub fn codex_limits_in(path: &Path) -> Option<crate::model::Limits> {
+    read_tail_lines(path, 2 << 20).iter().rev().find_map(|l| {
+        if !l.contains("\"token_count\"") {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_str(l).ok()?;
+        crate::parse::codex_limits(&v["payload"], &v["timestamp"])
+    })
+}
+
 /// Codex rollout files from the last `days` day folders, newest first.
 fn codex_rollouts(days: i64) -> Vec<PathBuf> {
     let mut v = Vec::new();
