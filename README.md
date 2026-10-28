@@ -50,6 +50,12 @@ cargo install --git https://github.com/ielbadisy/trax
   state and flags `✦` when another session finishes, so you know when to
   press `ctrl-q` and go back.
 
+- **Shows usage.** Each tile shows how full the context is and the tokens
+  used so far (`ctx 72% · 1.2M tok`, yellow from 70%, red from 90%). The top
+  bar shows your Codex plan limits: the 5-hour and weekly windows and when
+  they reset (`codex 5h 9% · wk 1% ↻Mon 15:02`). Claude Code does not write
+  its plan limits to its transcripts, so those are not shown yet.
+
 - **Hosts sessions itself.** `trax new` (or `n` in the dashboard) starts an
   agent in the background, owned by trax: no window needed, full control.
 - **Enter = be inside the session.** Select any session and press Enter: you
