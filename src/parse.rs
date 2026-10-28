@@ -1,6 +1,6 @@
 //! Incremental readers for agent transcripts (JSONL files written by the agents).
 
-use crate::model::{Agent, Msg, Role};
+use crate::model::{Agent, Limits, Msg, Role, Usage, Window};
 use serde_json::Value;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -24,11 +24,16 @@ pub struct Tail {
     pub title: Option<String>,
     /// Codex only: a turn is in progress.
     pub busy: Option<bool>,
+    pub usage: Usage,
+    /// Codex only: plan limits from the last turn.
+    pub limits: Option<Limits>,
+    /// Claude repeats a reply's usage on each of its content lines: count it once.
+    last_reply: Option<String>,
 }
 
 impl Tail {
     pub fn new(path: PathBuf, agent: Agent) -> Self {
-        Tail { path, agent, offset: 0, buf: Vec::new(), msgs: Vec::new(), total: 0, version: 0, title: None, busy: None }
+        Tail { path, agent, offset: 0, buf: Vec::new(), msgs: Vec::new(), total: 0, version: 0, title: None, busy: None, usage: Usage::default(), limits: None, last_reply: None }
     }
 
     /// Read whatever was appended since last time. Returns true on change.
@@ -40,6 +45,9 @@ impl Tail {
             self.offset = 0;
             self.buf.clear();
             self.msgs.clear();
+            self.usage = Usage::default();
+            self.limits = None;
+            self.last_reply = None;
         }
         if len == self.offset {
             return false;
@@ -148,6 +156,7 @@ impl Tail {
                 if v["isSidechain"].as_bool() == Some(true) {
                     return;
                 }
+                self.claude_usage(&v["message"]);
                 let Some(items) = v["message"]["content"].as_array() else { return };
                 for it in items {
                     match it["type"].as_str().unwrap_or("") {
@@ -169,6 +178,22 @@ impl Tail {
             }
             _ => {}
         }
+    }
+
+    fn claude_usage(&mut self, m: &Value) {
+        let u = &m["usage"];
+        if !u.is_object() {
+            return;
+        }
+        let id = m["id"].as_str().map(String::from);
+        if id.is_some() && id == self.last_reply {
+            return;
+        }
+        self.last_reply = id;
+        let n = |k: &str| u[k].as_u64().unwrap_or(0);
+        let ctx = n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens");
+        self.usage.tokens += ctx + n("output_tokens");
+        self.usage.context = Some(ctx);
     }
 
     fn claude_user_text(&mut self, s: &str, time: Option<String>) {
@@ -210,6 +235,7 @@ impl Tail {
                     self.busy = Some(false);
                     self.push(Role::Info, None, "turn interrupted".into(), time);
                 }
+                "token_count" => self.codex_tokens(p, &v["timestamp"]),
                 _ => {}
             }
             return;
@@ -272,6 +298,45 @@ impl Tail {
             _ => {}
         }
     }
+}
+
+impl Tail {
+    fn codex_tokens(&mut self, p: &Value, ts: &Value) {
+        let info = &p["info"];
+        if let Some(t) = info["total_token_usage"]["total_tokens"].as_u64() {
+            self.usage.tokens = t;
+        }
+        if let Some(c) = info["last_token_usage"]["input_tokens"].as_u64() {
+            self.usage.context = Some(c);
+        }
+        if let Some(w) = info["model_context_window"].as_u64() {
+            self.usage.window = Some(w);
+        }
+        if let Some(l) = codex_limits(p, ts) {
+            self.limits = Some(l);
+        }
+    }
+}
+
+/// Plan limits from a Codex `token_count` event payload.
+pub fn codex_limits(p: &Value, ts: &Value) -> Option<Limits> {
+    let rl = &p["rate_limits"];
+    if !rl.is_object() {
+        return None;
+    }
+    let win = |w: &Value| {
+        Some(Window {
+            used_pct: w["used_percent"].as_f64()?,
+            minutes: w["window_minutes"].as_u64().unwrap_or(0),
+            resets_at: w["resets_at"].as_i64().unwrap_or(0),
+        })
+    };
+    let at = ts
+        .as_str()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.timestamp())
+        .unwrap_or(0);
+    Some(Limits { primary: win(&rl["primary"]), secondary: win(&rl["secondary"]), at })
 }
 
 fn tag(s: &str, name: &str) -> Option<String> {
@@ -439,6 +504,11 @@ mod tests {
         );
         assert_eq!(t.title.as_deref(), Some("README.md broken link"));
         assert_eq!(t.busy, None);
+        // The repeated msg_1 line is counted once; the sidechain is ignored.
+        assert_eq!(t.usage.tokens, 1550 + 1725);
+        assert_eq!(t.usage.context, Some(1705));
+        assert_eq!(t.usage.context_pct(), Some(0));
+        assert!(t.limits.is_none());
     }
 
     #[test]
@@ -457,6 +527,11 @@ mod tests {
             ]
         );
         assert_eq!(t.busy, Some(false));
+        assert_eq!(t.usage.tokens, 48210);
+        assert_eq!(t.usage.context_pct(), Some(4));
+        let l = t.limits.unwrap();
+        assert_eq!(l.primary.unwrap().used_pct, 9.0);
+        assert_eq!(l.secondary.unwrap().minutes, 10080);
     }
 
     #[test]
@@ -503,6 +578,21 @@ mod tests {
         assert!(t.poll());
         assert_eq!(show(&t), vec![(Role::User, "fresh".into())]);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn usage_labels() {
+        use crate::render::{count, usage_text, window_text};
+        assert_eq!(count(950), "950");
+        assert_eq!(count(12_300), "12.3k");
+        assert_eq!(count(37_368_416), "37.4M");
+        let u = Usage { tokens: 1_200_000, context: Some(144_000), window: None };
+        assert_eq!(usage_text(&u), "ctx 72% · 1.2M tok");
+        let big = Usage { tokens: 0, context: Some(500_000), window: None };
+        assert_eq!(big.context_pct(), Some(50));
+        let w = Window { used_pct: 42.0, minutes: 300, resets_at: 1_000 };
+        assert_eq!(window_text(&w, 2_000).0, "5h 0%");
+        assert!(window_text(&w, 500).0.starts_with("5h 42% ↻"));
     }
 
     #[test]
