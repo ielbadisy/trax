@@ -425,7 +425,11 @@ pub fn sanitize(s: &str) -> String {
                 Some(']') => {
                     // OSC: until BEL or ST
                     while let Some(n) = it.next() {
-                        if n == '\x07' || (n == '\x1b' && it.peek() == Some(&'\\')) {
+                        if n == '\x07' {
+                            break;
+                        }
+                        if n == '\x1b' && it.peek() == Some(&'\\') {
+                            it.next(); // consume the backslash of ST
                             break;
                         }
                     }
@@ -599,6 +603,11 @@ mod tests {
     fn sanitize_drops_escapes_and_controls() {
         assert_eq!(sanitize("\x1b[1;31mred\x1b[0m\tx\x07"), "red    x");
         assert_eq!(sanitize("\x1b]0;title\x07after"), "after");
+        assert_eq!(sanitize("\x1b]0;title\x1b\\after"), "after");
+        assert_eq!(
+            sanitize("\x1b]8;;https://x.io\x1b\\text\x1b]8;;\x1b\\"),
+            "text"
+        );
     }
 
     #[test]
