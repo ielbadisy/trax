@@ -57,6 +57,8 @@ struct App {
     hours: u64,
     show_ended: bool,
     mirror_on: bool,
+    /// Mouse capture on: wheel scrolls; off: the terminal selects text to copy.
+    mouse: bool,
     marked: HashSet<String>,
     done: HashSet<String>,
     prev: HashMap<String, State>,
@@ -169,6 +171,7 @@ impl App {
             hours: o.hours,
             show_ended: o.show_ended,
             mirror_on: false,
+            mouse: true,
             marked: HashSet::new(),
             done: HashSet::new(),
             prev: HashMap::new(),
@@ -510,6 +513,15 @@ impl App {
             KeyCode::Char('m') => {
                 self.mirror_on = !self.mirror_on;
                 self.say(if self.mirror_on { "mirror: real screens of trax-run sessions" } else { "mirror off: transcripts" });
+            }
+            KeyCode::Char('M') => {
+                self.mouse = !self.mouse;
+                let _ = if self.mouse {
+                    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)
+                } else {
+                    crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)
+                };
+                self.say(if self.mouse { "mouse on: wheel scrolls" } else { "mouse off: select text to copy (M to restore)" });
             }
             KeyCode::Char('t') => {
                 self.detail = (self.detail + 1) % 3;
@@ -1107,6 +1119,7 @@ impl App {
             ("wheel PgUp PgDn Home", "scroll the whole conversation (End follows live)"),
             ("t", "detail: conversation → + tool calls → + tool output"),
             ("m", "mirror: show the real screen of sessions inside trax"),
+            ("M", "mouse off/on: off lets you select and copy text"),
             ("e", "include sessions that ended recently"),
             ("/", "filter by name, folder, title"),
             ("", "Drive"),
