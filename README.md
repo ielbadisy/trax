@@ -104,6 +104,7 @@ name, folder or title.
 | x | interrupt (Esc) |
 | n | new hosted session (`cmd @ folder`) |
 | m | mirror real screens |
+| M | mouse capture off/on (off: select text to copy) |
 | ? | help |
 
 ## How it works
